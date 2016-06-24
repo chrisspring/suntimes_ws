@@ -1,0 +1,349 @@
+<a href="articles.html">&bull; Articles</a>
+<a href="computing_articles.html">&bull; Articles about computing</a>
+<a href="development_articles.html">&bull; Articles about software development</a>
+<a href="apache-integration.html">&bull; Apache integration software</a>
+
+<h1>Implementing a Web Service using CXF in an OSGi bundle</h1>
+
+This article describes in detail how to implement a Web Service using
+Apache CXF in an OSGi environment. The Web Service endpoint is configured
+using an OSGi Blueprint XML file, with the actual implementation in 
+good old-fashioned Java code. The example has been tested on Red Hat JBoss Fuse 6.1 and Fabric8, although I would expect it to work in other OSGi containers
+if the necessary CXF dependencies are installed. 
+This example uses Maven as a build tool, as there are simply
+too many dependencies to manage using simple scripts. In addition, we
+can take advantage of the Maven Fabric8 plugin to deploy the code on a
+Fuse/Fabric8 cluster. However, as with
+all my Apache integration articles, the principles are explained in
+considerable detail. No clever IDE tools are required -- all the source
+in the article can be, and was, written using a text editor.
+<p/>
+This article builds on many of my preceding ones, and I assume a knowledge
+of OSGi, Fabric8/Fuse, CXF Web Services, and Maven. Implied in
+that list of prerequisites is some working knowledge of Web Services in general,
+and particularly their implementation in Java.
+<p/>
+If you are not familiar with the Fabric8 architecture at all, 
+then I would recommend that you read <a href="simplefabrictest.html">Deploying 
+an OSGi application on Apache Fabric8, from the ground up</a>. If you're
+not familiar with OSGi either, then before reading that article I would recommend
+<a href="osgitest">Creating OSGI bundles and services from the ground up using 
+Apache Karaf</a>. 
+<p/>
+The procedure in this article has been tested on Fedora 20 Linux, although
+there's no particular reason to think that there is anything platform-specific
+about it.
+
+<p/>
+This article describes 'code first' development of a Web Service, that is,
+we start from a Java interface and elaborate that into a service. The
+alternative 'contract first' approach, which starts with a WSDL definition,
+is described from first principles in the article
+<a href="cxftest.html">Creating a Web Service using Apache CXF from the ground up</a>. Alternatively, a more complex example of contract-first Web Service
+development is given in <a href="camelcxfservertest.html">Implementing a Web Service using Camel in an OSGi bundle</a>
+
+Other topics covered by this article include:
+<ul>
+<li>Using the Maven <code>cxf-codegen-plugin</code> to generate a WSDL file from a Java interface</li>
+<li>Specifying CXF Web Services endpoints in a Blueprint XML file</li>
+<li>Using JAX-WS annotations to describe a Web Service 
+interface in Java code</li>
+<li>Testing a Web Service using SoapUI</li>
+</ul>
+
+<h2>Coding the Web Service</h2>
+
+The Web Service in this example goes slightly beyond "Hello, World" -- 
+it is a service that can calculate the sunrise and sunset (in UTC time)
+at a specific latitude and longitude on a specific date. I'm not
+going to describe the mathematics in this article, which is about
+Web Services and not astrophysics. However, all the implementation
+classes are in the source code bundle and, I hope, reasonably well 
+documented.  
+
+<h3>Coding the interface</h3>
+
+The Web Service will expose two methods only -- one for sunrise time, and
+one for sunset. So we start the development by writing an interface
+that describes those methods. This interface is called
+<code>SunTimesSEI</code>, where 'SEI' stands for Service Endpoint Interface.
+
+<pre class="codeblock" lang="java">
+package net.kevinboone.apacheintegration.suntimes_ws;
+import javax.jws.*;
+
+@WebService(name="SunTimesWS") 
+public interface SunTimesSEI 
+  {
+  public String getSunsetTimeUTC (@WebParam(name="year") int year, 
+      @WebParam(name="month") int month, 
+      @WebParam(name="day") int day, 
+      @WebParam(name="longitude") double longitude, 
+      @WebParam(name="latitude") double latitude)
+    throws SunTimesException;
+
+  public String getSunriseTimeUTC (@WebParam(name="year") int year, 
+      @WebParam(name="month") int month, 
+      @WebParam(name="day") int day, 
+      @WebParam(name="longitude") double longitude, 
+      @WebParam(name="latitude") double latitude)
+    throws SunTimesException;
+  }
+</pre>
+
+Apart from the annotations, this is a perfectly ordinary Java interface.
+The <code>WebService</code> annotation marks this as a Web Service with
+the specified name. The <code>@WebParam</code> annotations provide names
+for the various arguments to the methods, as they will appear in 
+the WSDL file. These annotations are important in making the WSDL
+file (more) readable; by default the WSDL generator tooling will simply
+name these arguments <code>arg0</code>, <code>arg1</code>. The 
+rationale for this odd-seeming implementation detail is described
+in the  
+<a href="https://cwiki.apache.org/confluence/display/CXF/FAQ">CXF FAQ</a>.
+<p/>
+Note that I have rather lazily organized the Service implementation to 
+return the time in a String, rather than some Java data type. For 
+demonstration purposes, it's slightly less fiddly to do this, and makes
+the XML a whole lot more comprehensible, than using an object type.
+
+
+<h3>Coding the implementation class</h3>
+
+The implementation class contains the bodies of the methods exposed
+in the Service Endpoint Interface, along with whatever other logic
+is necessary. In this simple example, the entire application logic is
+in this one class; that wouldn't necessarily be a good practice in a 
+real application. The skeleton of the class is as follows:
+
+<pre class="codeblock" lang="java">
+@javax.jws.WebService(endpointInterface
+  ="net.kevinboone.apacheintegration.suntimes_ws.SunTimesSEI") 
+public class SunTimes implements SunTimesSEI
+{
+public String getSunsetTimeUTC (int year, int month, int day, 
+      double longitude, double latitude)
+    throws SunTimesException
+  {
+  // Calulation logic here...
+  }
+
+public String getSunriseTimeUTC (int year, int month, int day, 
+      double longitude, double latitude)
+    throws SunTimesException
+  {
+  // Calulation logic here...
+  }
+}
+</pre>
+
+Note that we must, again, annotate the class as a <code>@WebService</code>,
+but in the implementation class the annotation specifies the location
+of the corresponding Service Endpoint Interface. Other than that, in 
+this simple example, this is a perfectly ordinary Java class that implements
+the methods in an interface. 
+<p/>
+In fact, the CXF tooling can work directly on a class, so strictly speaking
+it's not necessary to use an interface at all. However, for all but the
+simplest services, that's unlikely to be a scalable approach to development.
+
+<h3>Generating the WSDL</h3>
+
+<b>Generating a WSDL file is an optional step in this example, as it
+is not strictly necessary.</b> The CXF implementation can generate a
+WSDL file from a Java interface, but it can do it just as well at
+runtime as at compile time, and that's what happens if this step is
+missed out. However, I'm including the details here because in many 
+projects you will need an explicity WSDL file before the service is
+actually running.
+<p/>
+Since we're starting with Java, we need
+the <code>java2ws</code> tool to generate the WSDL, but as we're using
+Maven, it's easier to use the Maven <code>cxf-java2ws-plugin</code>
+plugin to integrate this into the build process. If you look in 
+the <code>pom.xml</code> file, you'll see the specification
+for the plugin, which is essentially boilerplate code, apart from
+the element that indicates the interface that forms the SEI:
+
+<pre class="codeblock" lang="xml">
+  <plugin>
+        //...
+        <artifactId>cxf-java2ws-plugin</artifactId>
+            //...
+            <configuration>
+              <className>
+                net.kevinboone.apacheintegration.suntimes_ws.SunTimesSEI
+              </className>
+            </configuration>
+            <goals>
+              <goal>java2ws</goal>
+            </goals>
+      </plugin>
+</pre>
+
+We can generate the WSDL using 
+
+<pre class="codeblock">
+$ <b>mvn generate-sources</b>
+</pre>
+
+but there's no particular need to, as the usual build processes will
+do it implicitly.
+
+<h3>Specifying the endpoint in a Blueprint XML file</h3>
+
+The final development step is to specify the Web Services endpoint, 
+and thereby link the URL that clients will invoke with the class
+that provides the implementation. In a Blueprint XML file this
+is trivially easy; the essential elements are shown below. 
+
+<pre class="codeblock" lang="xml">
+<blueprint xmlns="http://www.osgi.org/xmlns/blueprint/v1.0.0"
+       xmlns:jaxws="http://cxf.apache.org/blueprint/jaxws"
+    ...>
+
+    <jaxws:endpoint id="myservice"
+      implementor="net.kevinboone.apacheintegration.suntimes_ws.SunTimes"
+      address="/suntimes_ws"/>
+</blueprint>
+</pre>
+
+@notebox(We need to be a bit careful about the <code>xmlns:jaxws</code> namespace here -- it must specifically be <code>blueprint/jaxws</code>. If you've seen examples of CXF endpoints configured using Spring, you'll probably be more used to <code>http://cxf.apache.org/jaxws</code>. Getting this wrong will not stop the bundle from building, but will lead to a slew of incomprehensible error messages at deployment time. 
+<p/>
+The <code>implementor</code> attribute specifies the class that implements 
+the SEI (and thus provides the actual functionality). <code>address</code> 
+is the URL of the service <i>as it is presented to CXF</i>. In Fuse/Fabric8
+this will <i>not</i> be the URL requested by clients, as this is
+configurable. By default, Fuse/Fabric8 puts <code>/cxf</code> in front of
+this URL, to separate CXF requests from requests on the Web console and
+other administrative interfaces.
+
+<h2>Building the Web Service and deploying on Fuse/Fabric8</h2>
+
+Building should be as simple as
+
+<pre class="codeblock">
+$ <b>mvn install</b>
+</pre>
+
+which will also put the compiled OSGi bundle into the local Maven
+repository, where it can be retried by Fuse/Fabric/Karaf.
+
+<h3>Deploying on a stand-alone Fuse (or Karaf, or ServiceMix) installation</h3>
+
+If the compiled bundle is in the local repository, then we can deploy 
+on an installation of Fuse/Fabric8 on the same machine as follows:
+
+<pre class="codeblock">
+JBossFuse:karaf@root&gt; osgi:install -s mvn:net.kevinboone.apacheintegration/suntimes_ws/0.0.0.1
+</pre>
+
+A similar procedue should work on Karaf or ServiceMix, except that you'll need
+to add CXF support first, using a command such as <code>features:install
+cxf</code>.
+<p/>
+An alternative procedure is to copy the JAR file containing the bundle
+(from the <code>target</code> directory) to some convenient location,
+and install it using, for example, <code>osgi:install file://somefile</code>.
+ 
+
+<h3>Deploying on a fabric</h3>
+
+Deploying on a fabric is complicated by the fact that, other than on the
+root container, we can't simply use <code>osgi:install</code>. Instead, 
+software must be placed in a repository (the fabric's own repository will
+do), and then added to a profile. The profile can then be added to 
+a container, which will install the application. 
+<p/>
+The most convenient way to do this is to use the Fabric8 Maven plugin,
+which requires a simple addition to the <code>pom.xml</code>. The configuration
+specifies the URL of the fabric server to which to deploy, and then the
+deployment process is as simple as
+
+<pre class="codeblock">
+$ <b>mvn fabric8:deploy</b>
+</pre>
+
+This process does not install the software in an actual container; instead
+it creates a profile whose name, in this case, will be
+<code>Net.Kevinboone.Apacheintegration/suntimes_ws</code> (this name is
+derived from the Maven coordinates). This profile is ready to add
+to a container -- you'll need to add <code>Feature/CXF</code> profile 
+as well, if you're not deploying on the root container.
+<p/>
+For a more detailed explanation of the Fabric8 Maven plug-in, see my article
+<a href="camelfabrictest">Using the Fabric8 Maven plugin to deploy a Camel route to a fabric</a>.
+
+
+<h2>Testing the Web Service using SoapUI</h2>
+
+Before trying to execute the Web Service, a simple sanity test is to 
+retrieve the WSDL
+for the service can be using a Web browser. The conventional URL for the WSDL 
+is the service
+URL with <code>?wsdl</code> appended  which, in this case,
+will be a URL of the form<code>http://localhost:8181/cxf/suntimes_ws?wsdl</code>.
+<p/>
+SoapUI is a general-purpose Web Services testing tool. Binaries are
+available for many platforms from the 
+<a href="http://www.soapui.org/Downloads/">SoapUI</a> Web site. There
+isn't space here to describe how to install SoapUI, as it differs
+from one platform to another.
+<p/>
+Here is one way to test the Web Service of this article using 
+SoapUI.
+<p/>
+
+1. Within the SoapUI graphical user interface, create a  new SOAP project 
+(File : New SOAP Project).
+For the project name, enter some identifier (e.g., <code>suntimes_ws</code>).
+For the initial WSDL, enter the WSDL URL on the running server, e.g.  
+<code>http://localhost:8181/cxf/suntimes_ws?wsdl</code>.
+Ensure "Create Requests" is checked. Click OK -- this will generate some
+sample requests appropriate to the Service.
+<p/>
+2. Under 'Projects' in the left-hand pane, you should see a tree that can
+be expanded to show the two functions exposed by the <code>suntimes_ws</code>
+Service. Expand the function <code>getSunriseTimeUTC</code>  to show
+the automatically-generated sample request <code>Request 1</code>.
+Right-click <code>Request 1</code> and select 'Show request editor'. This
+will bring up a SOAP envelope based on the WSDL file, with ? placeholders 
+where you can enter the input values.
+<p/>
+3. Enter some value for the year, month, day, latitude, and longitude elements 
+in place of the ? placeholders.
+<p/>
+4. Click the green triangle in the top left of the editor window to
+run the operation. This should display the SOAP envelope returned
+by the service:
+
+
+<br clear="all"/>
+<p align="center">
+<img src="suntimes_ws_shot1.png" alt="screenshot" vspace="10" hspace="10"/>
+<p>
+
+All being well, the returned value should be the sunrise time appropriate
+to the date and location (expressed in UTC time).
+
+<h2>Summary</h2>
+
+In summary, the process for implementing a Web Service code-first, 
+using Maven, is:
+<p/>
+1. Write the Java interfaces; annotate with <code>@WebService</code> and
+(perhaps) <code>@WebMethod</code>.<p/>
+2. Write the Java classes that implement the interfaces; annotate with
+<code>@WebService</code> and indicate the corresponding interface.<p/>
+3. Add the code generator plugin to the Maven <code>pom.xml</code> if
+you need an explicit WSDL file at build time.<p/>
+4. Add one or more <code>jaxws:endpoint</code> elements to the Blueprint
+XML file.<p/>
+5. Build and test.
+ 
+
+<h2>Downloads</h2>
+
+<a href="suntimes_ws.zip">Source code bundle (Maven project)</a>
+
+
